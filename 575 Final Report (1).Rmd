@@ -1,0 +1,470 @@
+---
+title: "final report"
+author: "Kejing Yan"
+date: "2023-05-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(formatR)
+knitr::opts_chunk$set(echo = TRUE)
+library(car)
+#library(caret)
+library(dplyr)
+library(ggplot2)
+library(hrbrthemes)
+library(GGally)
+library(gridExtra)
+library(glmnet)
+library(nlme)
+library(MASS)
+library(goftest)
+library(lmtest)
+library(plotmo)
+theme_update(plot.title = element_text(hjust = 0.5))
+opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE)
+```
+
+```{r}
+# Processing data:
+rm(list = ls())
+# Read in data from Final Project Code.Rmd
+bmw <- read.csv('~/BMWpricing_trainingvalidation.csv', as.is = T)
+# Convert all continuous variables to numeric:
+bmw$mileage <- as.numeric(bmw$mileage)
+bmw$engine_power <- as.numeric(bmw$engine_power)
+bmw$price <- as.numeric(bmw$price)
+
+# Filter out implausible observations: 
+bmw <- bmw %>% filter(mileage >= 0, )
+bmw <- bmw %>% filter(engine_power > 0)
+
+# Calculate the interval between sold and registration dates:
+bmw.regis <- strptime(bmw$registration_date, "%m/%d/%Y")
+bmw.sold <- strptime(bmw$sold_at, "%m/%d/%Y")
+# Create age variable (in days)
+bmw$age <- difftime(bmw.sold, bmw.regis, units = 'days')
+bmw$age <- as.numeric(bmw$age)
+
+# Convert all the categorical variables to factors:
+colnames(bmw)
+categorical.colnames <- colnames(bmw)[c(2:3, 6:16)]
+for (.col in categorical.colnames){
+bmw[, .col] <- factor(bmw[, .col], ordered = F)
+}
+```
+```{r}
+# Split data  into training and validation sets: 
+DataSetTraining = bmw %>% filter(bmw$training == 1) # 50% of the data
+DataSetValidation = bmw %>% filter(bmw$validation == 1) # 50% of the data
+
+attach(DataSetTraining)
+```
+
+Scatter plot Matrix
+```{r}
+data <- data.frame(price, mileage, engine_power, age)
+ggpairs(data, 
+        columnLabels = c("Price", "Mileage", "Engine Power", "Age"),
+        upper = list(continuous = wrap("points", alpha = 0.3, size=0.15),
+                     combo = wrap("box", alpha = 0.8, size = 0.15, outlier.size=0.05)),
+        lower = list(continuous = wrap('cor', size = 3),
+                     combo = wrap("facethist", bins = 40)),
+        axis.text.y = element_text(size = 6))
+
+data.2 <- data.frame(price, sqrt(mileage), engine_power, log(age), sqrt(mileage)*log(age))
+ggpairs(data.2, 
+        columnLabels = c("Price", "sqrt(Mileage)", "Engine Power", "log(Age)", "Interaction Term"),
+        upper = list(continuous = wrap("points", alpha = 0.3, size=0.15),
+                     combo = wrap("box", alpha = 0.8, size = 0.15, outlier.size=0.05)),
+        lower = list(continuous = wrap('cor', size = 3),
+                     combo = wrap("facethist", bins = 40)),
+        axis.text.y = element_text(size = 6))
+```
+
+look at sub-categories of model key and car type
+```{r}
+table(car_type)
+table(model_key)
+```
+
+Categorization
+```{r}
+new.car.type <- list(
+  others = c("coupe","subcompact","van", "convertible"),
+  hatchback = c("hatchback"),
+  estate  = c("estate"),
+  sedan = c("sedan"),
+  subcompact = c("subcompact"),
+  suv = c("suv")
+)
+
+for (i in 1:length(new.car.type)) levels(DataSetTraining$car_type)[levels(DataSetTraining$car_type)%in%new.car.type[[i]]] <- names(new.car.type)[i]
+table(car_type)
+
+detach(DataSetTraining)
+attach(DataSetTraining)
+table(car_type)
+```
+```{r}
+# Series 1:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("114", "116", "118", "120", "123", "125", "135")] <- "series_1"
+# Series 2: 
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("216 Active Tourer", "216 Gran Tourer", "218", "218 Active Tourer", "218 Gran Tourer", "220")] <- "series_2"
+# Series 3:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("316", "318 Gran Turismo", "318", "320 Gran Turismo", "320", "325", "325 Gran Turismo", "328", "330", "330 Gran Turismo", "335", "335 Gran Turismo")] <- "series_3"
+# Series 4:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("418 Gran Coupé", "420", "420 Gran Coupé", "425", "430", "430 Gran Coupé", "435", "435 Gran Coupé")] <- "series_4"
+# Series 5:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("518", "520", "520 Gran Turismo", "523", "525", "528", "530", "530 Gran Turismo", "535", "535 Gran Turismo")] <- "series_5"
+# Series 6:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("640", "640 Gran Coupé", "650")] <- "series_6"
+# Series 7:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("730", "740", "750")] <- "series_7"
+# Series i:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("i3", "i8")] <- "series_i"
+# Series M:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("M135", "M235", "M3", "M4", "M550")] <- "series_M"
+# Series X:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("X1", "X3", "X4", "X5", "X5 M", "X5 M50", "X6", "X6 M")] <- "series_X"
+# Series Z:
+levels(DataSetTraining$model_key)[levels(DataSetTraining$model_key)%in%c("Z4")] <- "series_Z"
+
+table(DataSetTraining$model_key)
+detach(DataSetTraining)
+attach(DataSetTraining)
+```
+box plots for car types and model keys
+```{r}
+ggplot(DataSetTraining, aes(x = car_type, y = price)) + geom_boxplot() + xlab("Car Types") + ylab("Price Sold in 2018")
+```
+```{r}
+ggplot(DataSetTraining, aes(x = model_key, y = price)) + geom_boxplot() + xlab("Model Keys") + ylab("Price Sold in 2018")
+```
+Feature 1-8
+```{r}
+par(mfrow = c(2,4))
+# Box plots: 
+ggplot(DataSetTraining, aes(x = feature_1, y = price)) + geom_boxplot() + xlab("Feature 1") + ylab("Price Sold in 2018")
+ggplot(DataSetTraining, aes(x = feature_2, y = price)) + geom_boxplot() + xlab("Feature 2") + ylab("Price Sold in 2018")
+ggplot(DataSetTraining, aes(x = feature_3, y = price)) + geom_boxplot() + xlab("Feature 3") + ylab("Price Sold in 2018")
+ggplot(DataSetTraining, aes(x = feature_4, y = price)) + geom_boxplot() + xlab("Feature 4") + ylab("Price Sold in 2018")
+ggplot(DataSetTraining, aes(x = feature_5, y = price)) + geom_boxplot() + xlab("Feature 5") + ylab("Price Sold in 2018")
+ggplot(DataSetTraining, aes(x = feature_6, y = price)) + geom_boxplot() + xlab("Feature 6") + ylab("Price Sold in 2018")
+ggplot(DataSetTraining, aes(x = feature_7, y = price)) + geom_boxplot() + xlab("Feature 7") + ylab("Price Sold in 2018")
+ggplot(DataSetTraining, aes(x = feature_8, y = price)) + geom_boxplot() + xlab("Feature 8") + ylab("Price Sold in 2018")
+```
+Hypothesis testing in the mean for feature 1-8
+```{r}
+t.test(price[which(feature_1 == 'TRUE')], price[which(feature_1 == 'FALSE')])
+t.test(price[which(feature_2 == 'TRUE')], price[which(feature_2 == 'FALSE')])
+t.test(price[which(feature_3 == 'TRUE')], price[which(feature_3 == 'FALSE')])
+t.test(price[which(feature_4 == 'TRUE')], price[which(feature_4 == 'FALSE')])
+t.test(price[which(feature_5 == 'TRUE')], price[which(feature_5 == 'FALSE')])
+t.test(price[which(feature_6 == 'TRUE')], price[which(feature_6 == 'FALSE')])
+t.test(price[which(feature_7 == 'TRUE')], price[which(feature_7 == 'FALSE')])
+t.test(price[which(feature_8 == 'TRUE')], price[which(feature_8 == 'FALSE')])
+```
+Exclude feature 7 in the following analysis
+```{r}
+# Fitting our full model:
+formula_wo_ft <- 'price ~ sqrt(mileage) + engine_power + log(age) + I(sqrt(mileage)*log(age)) + car_type + model_key + feature_1 + feature_2 + feature_3 + feature_4 + feature_5 + feature_6 + feature_8'
+
+m.mls <- lm(formula_wo_ft, data = DataSetTraining)
+summary(m.mls)
+```
+
+Diagnostic plots
+```{r}
+par(mfrow = c(2,2))
+plot(m.mls)
+```
+remove point 38
+```{r}
+DataSetTraining <- filter(DataSetTraining, price!=95200)
+detach(DataSetTraining)
+attach(DataSetTraining)
+```
+
+```{r}
+m.mls <- lm(price ~ sqrt(mileage) + engine_power + log(age) + I(sqrt(mileage)*log(age)) + car_type + model_key + feature_1 + feature_2 + feature_3 + feature_4 + feature_5 + feature_6 + feature_8, data = DataSetTraining)
+par(mfrow = c(2,2))
+plot(m.mls)
+```
+```{r}
+# Replotting Standardized Residual Plot w/o outlier:
+StanResMLS <- rstandard(m.mls)
+dataMLS <- data.frame(DataSetTraining$price,StanResMLS)
+
+ggplot() +
+  geom_point(data=dataMLS, aes(x=DataSetTraining$price, y=StanResMLS, color = "MLS"), size = 0.5) +
+  geom_hline(yintercept=4,color='blue') + geom_hline(yintercept=-4, color='blue') +
+  scale_color_manual(name = element_blank(), labels = c("MLS"), values = c("steelblue")) +
+  labs(y = "Standarized Residual", x = "Price") + ggtitle("Training Standarized Residuals Plot of Initial Model") + 
+  scale_y_continuous(breaks = c(-4, 4, 10, 20))
+```
+
+```{r}
+vif(m.mls)
+
+m.mls1 <- lm(price ~ sqrt(mileage) + engine_power + log(age) + I(sqrt(mileage)*log(age)) + model_key + feature_1 + feature_2 + feature_3 + feature_4 + feature_5 + feature_6 + feature_8, data = DataSetTraining)
+summary(m.mls1)
+par(mfrow = c(2,2))
+plot(m.mls1)
+```
+
+```{r}
+# BoxCox:
+boxcox(m.mls1,plotit=TRUE)
+```
+
+```{r}
+# Applying Transformation:
+m.trans <- lm(sqrt(price) ~ sqrt(mileage) + engine_power + log(age) + I(sqrt(mileage)*log(age)) + model_key + feature_1 + feature_2 + feature_3 + feature_4 + feature_5 + feature_6 + feature_8, data = DataSetTraining)
+summary(m.trans)
+```
+```{r}
+par(mfrow = c(2,2))
+plot(m.trans)
+```
+```{r}
+# Standardized Residual Plot:
+StanResMLS <- rstandard(m.trans)
+newprice <- sqrt(price)
+dataMLS <- data.frame(newprice,StanResMLS)
+ggplot() +
+  geom_point(data=dataMLS, aes(x=newprice, y=StanResMLS, color = "MLS"), size = 0.5) +
+  geom_hline(yintercept=4,color='blue') + geom_hline(yintercept=-4, color='blue') +
+  scale_color_manual(name = element_blank(), labels = c("MLS"), values = c("steelblue")) +
+  labs(y = "Standarized Residual", x = "Transformed Price") + ggtitle("Standarized Residuals MLS Plot") + 
+  scale_y_continuous(breaks = c(-4, 4, 10, 20))
+```
+
+WLS
+```{r}
+#create weight vector
+sdprice.by.log.age <- by(price, log(age), sd)
+# Getting mean:"
+mprice.by.log.age <- by(price, log(age), mean)
+# Plotting SD Price vs. Mean log(age):
+plot(mprice.by.log.age, sdprice.by.log.age, xlab="Log(age)", ylab="SD of Price",
+     main="SD Price versus log(age) mean; LOESS fit",col="red", lty=0, cex=1, pch=19)
+# LOESS:
+smooth.sd <- loess.smooth(mprice.by.log.age, sdprice.by.log.age)
+# Plot LOESS regressor:
+lines(smooth.sd, lty=2)
+# Let's use the LOESS fit to create weights for WLS regression:
+# Create LOESS object:
+smooth.pricesd.orig <- loess(sdprice.by.log.age ~  mprice.by.log.age, control=loess.control(surface="direct"))
+# Predict SD
+# LOESS interpolant:
+sdprice.fits <- predict(smooth.pricesd.orig,data.frame(mprice.by.log.age = log(age)))
+my.weights1 <- 1/(sdprice.fits)^2
+```
+
+
+```{r}
+m.trans1 <- lm(sqrt(price) ~ sqrt(mileage) + engine_power + log(age) + I(sqrt(mileage)*log(age)) + model_key + feature_1 + feature_2 + feature_3 + feature_4 + feature_5 + feature_6 + feature_8, data = DataSetTraining, weights = my.weights1)
+summary(m.trans1)
+```
+```{r}
+par(mfrow = c(2,2))
+plot(m.trans1)
+```
+
+```{r}
+# Standardized Residual Plot: 
+StanResMLS <- rstandard(m.trans1)
+newprice <- sqrt(price)
+dataMLS <- data.frame(newprice,StanResMLS)
+ggplot() +
+  geom_point(data=dataMLS, aes(x=newprice, y=StanResMLS, color = "MLS"), size = 0.5) +
+  geom_hline(yintercept=4,color='blue') + geom_hline(yintercept=-4, color='blue') +
+  scale_color_manual(name = element_blank(), labels = c("MLS"), values = c("steelblue")) +
+  labs(y = "Standarized Residual", x = "Transformed Price") + ggtitle("Training Standarized Residuals Plot of WLS Model") +
+  scale_y_continuous(breaks = c(-4, 4, 10, 20))
+
+```
+Normality Test
+```{r}
+shapiro.test(resid(m.trans1))
+```
+reject the null hypothesis of normality
+
+Heteroscedasticity Test
+```{r}
+bptest(m.trans1)
+```
+null hypothesis that the data is homoscedastic
+
+
+LASSO
+```{r}
+attach(DataSetTraining)
+#standardize variables
+age_s = scale(log(age))
+engine_power_s = scale(engine_power)
+mileage_s = scale(sqrt(mileage))
+
+x.df <- model.matrix(lm(sqrt(price) ~ mileage_s + age_s + engine_power_s + model_key + I(age_s*mileage_s) + feature_1 + feature_2 + feature_3 + feature_4 + feature_5 + feature_6 + feature_8, weights = my.weights1))
+mod <- glmnet(x = x.df, y = sqrt(price), alpha = 1)
+#plot(mod, xvar = "lambda", label = TRUE)
+
+plot_glmnet(mod, label=TRUE)
+
+cv_lasso_fit <- cv.glmnet(x.df, y = sqrt(price), alpha = 1, nfolds = 5)
+plot(cv_lasso_fit)
+
+fit <- glmnet(x.df, sqrt(price), lambda = cv_lasso_fit$lambda.min, nfolds = 5, weights = my.weights1)
+fit$beta
+
+cv_lasso_fit$lambda.min
+```
+```{r}
+avPlots(m.trans1)
+```
+Remove feature 3 and 5 according to avplots.
+
+```{r}
+# Fitting new model based on LASSO:
+final <- lm(sqrt(price) ~ sqrt(mileage) + engine_power + log(age) + model_key + I(sqrt(mileage)*log(age)) + feature_1 + feature_2 + feature_4 + feature_6 + feature_8, weights = my.weights1, DataSetTraining)
+summary(final)
+```
+
+
+```{r}
+StanResMLS <- rstandard(final)
+newprice <- sqrt(price)
+dataMLS <- data.frame(newprice,StanResMLS)
+ggplot() +
+  geom_point(data=dataMLS, aes(x=newprice, y=StanResMLS, color = "MLS"), size = 0.5) +
+  geom_hline(yintercept=4,color='blue') + geom_hline(yintercept=-4, color='blue') +
+  scale_color_manual(name = element_blank(), labels = c("MLS"), values = c("steelblue")) +
+  labs(y = "Standarized Residual", x = 'Transformed Price') + ggtitle("Training Standarized Residuals Plot of Final Model") +
+  scale_y_continuous(breaks = c(-4, 4, 10, 20))
+```
+
+```{r}
+# Standarized Residuals vs Fitted
+Fitted = fitted(final)
+dataMLSFitted <- data.frame(Fitted,StanResMLS)
+
+# MLS Stan. Res. vs Fitted plot 
+ggplot() +
+  geom_point(data=dataMLSFitted, aes(x=Fitted, y=StanResMLS, color = "MLS"), size = 0.5) +
+  geom_hline(yintercept=4,color='blue') + geom_hline(yintercept=-4, color='blue') +
+  scale_color_manual(name = element_blank(), labels = c("MLS"), values = c("steelblue")) +
+  labs(y = "Standarized Residual") + labs(x = "Fitted value") +
+  ggtitle("Training Std. Residuals vs Fitted of Final Model") + 
+  scale_y_continuous(breaks = c(-4, 4, 10, 20))
+```
+
+```{r}
+# Diagnostic plots
+par(mfrow=c(2,2))
+plot(final)
+```
+
+Validation
+
+```{r}
+# Validation --------------------------------------------------------------------------------------
+# Residuals for training data
+detach(DataSetTraining)
+ResMLS <- resid(final)
+# Mean Square Error
+mean((ResMLS)^2)
+```
+
+
+```{r}
+# Series 1:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("114", "116", "118", "120", "123", "125", "135")] <- "series_1"
+# Series 2: 
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("216 Active Tourer", "216 Gran Tourer", "218", "218 Active Tourer", "218 Gran Tourer", "220")] <- "series_2"
+# Series 3:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("316", "318 Gran Turismo", "318", "320 Gran Turismo", "320", "325", "325 Gran Turismo", "328", "330", "330 Gran Turismo", "335", "335 Gran Turismo")] <- "series_3"
+# Series 4:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("418 Gran Coupé", "420", "420 Gran Coupé", "425", "430", "430 Gran Coupé", "435", "435 Gran Coupé")] <- "series_4"
+# Series 5:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("518", "520", "520 Gran Turismo", "523", "525", "528", "530", "530 Gran Turismo", "535", "535 Gran Turismo")] <- "series_5"
+# Series 6:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("640", "640 Gran Coupé", "650")] <- "series_6"
+# Series 7:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("730", "740", "750")] <- "series_7"
+# Series i:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("i3", "i8")] <- "series_i"
+# Series M:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("M135", "M235", "M3", "M4", "M550")] <- "series_M"
+# Series X:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("X1", "X3", "X4", "X5", "X5 M", "X5 M50", "X6", "X6 M")] <- "series_X"
+# Series Z:
+levels(DataSetValidation$model_key)[levels(DataSetValidation$model_key)%in%c("Z4")] <- "series_Z"
+
+detach(DataSetTraining)
+attach(DataSetTraining)
+```
+
+```{r}
+# remove the data with new levels in model_key
+diff_level <- DataSetValidation$model_key[! DataSetValidation$model_key %in% DataSetTraining$model_key]
+DataSetValidation <- DataSetValidation %>% filter(! model_key %in% diff_level)
+model_key <- as.factor(model_key)
+output <- predict(final, se.fit = TRUE, newdata = DataSetValidation)
+ResMLSValidation <- DataSetValidation$price - (output$fit)^2
+
+#MSE
+mean((ResMLSValidation)^2)
+```
+
+```{r}
+# Relative Mean Square Error for validation data
+mean((ResMLSValidation)^2) / mean((DataSetValidation$price)^2)
+
+# The same, but subtracting the overall mean in the denominator:
+mean((ResMLSValidation)^2) / mean((DataSetValidation$price-mean(DataSetValidation$price))^2)
+
+# Create data frame with validation observation and prediction
+test = data.frame(DataSetValidation$price, output$fit^2, 1:length(output$fit));
+colnames(test)[1] = "price"
+colnames(test)[2] = "Prediction"
+colnames(test)[3] = "Index"
+# Plot GroundCO vs Prediction for Validation Data Set
+ggplot(data = test, aes(x = Prediction, y = price)) + 
+  geom_point() +
+  ggtitle("Validation Price vs Prediction")
+```
+
+```{r}
+# Further comparisons
+ggplot(data = test, aes(x = Index)) +
+  geom_line(aes(y = price, color = "Price")) +
+  geom_line(aes(y = Prediction, color="Prediction"), linetype="twodash") +
+  scale_color_manual(name = element_blank(), labels = c("Price","Prediction"),
+                     values = c("darkred", "steelblue")) + labs(y = "") +
+  ggtitle("Validation")
+
+```
+
+```{r}
+# Hard to see, let's zoom in
+test2 = test[200:250,]
+# Plot GroundCO vs Prediction for Validation Data Set
+ggplot(data = test2, aes(x = Index)) +
+  geom_line(aes(y = price, color = "Price")) +
+  geom_line(aes(y = Prediction, color="Prediction"), linetype="twodash") +
+  scale_color_manual(name = element_blank(), labels = c("Price","Prediction"),
+                     values = c("darkred", "steelblue")) + labs(y = "") +
+  ggtitle("Validation")
+```
+
+
+
+
+
+
+
+
+
+
